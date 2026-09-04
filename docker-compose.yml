@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL (the database being monitored) ──
+  postgres:
+    image: postgres:16-alpine
+    container_name: optiq-postgres
+    environment:
+      POSTGRES_DB: optiq_target
+      POSTGRES_USER: optiq_monitor
+      POSTGRES_PASSWORD: changeme
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-pgstat.sql:/docker-entrypoint-initdb.d/01-init-pgstat.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U optiq_monitor -d optiq_target"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Spring Boot Backend ──
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: optiq-backend
+    ports:
+      - "8080:8080"
+    environment:
+      OPTIQ_DB_URL: jdbc:postgresql://postgres:5432/optiq_target
+      OPTIQ_DB_USERNAME: optiq_monitor
+      OPTIQ_DB_PASSWORD: changeme
+      OPTIQ_AI_PROVIDER: openai
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPTIQ_POLL_INTERVAL_MS: "60000"     # 1 min for dev
+      OPTIQ_SLOW_THRESHOLD_MS: "100"
+      OPTIQ_SLACK_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── React Frontend ──
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: optiq-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

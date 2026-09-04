@@ -1,0 +1,56 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: optiq-backend
+
+  # --- Monitored PostgreSQL database ---
+  datasource:
+    url: ${OPTIQ_DB_URL:jdbc:postgresql://localhost:5432/optiq_target}
+    username: ${OPTIQ_DB_USERNAME:optiq_monitor}
+    password: ${OPTIQ_DB_PASSWORD:changeme}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+
+  # --- Internal JPA store (tracks analyzed queries) ---
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+# --- Polling config ---
+optiq:
+  polling:
+    interval-ms: ${OPTIQ_POLL_INTERVAL_MS:300000}       # 5 minutes default
+    slow-query-threshold-ms: ${OPTIQ_SLOW_THRESHOLD_MS:500}
+    max-queries-per-poll: ${OPTIQ_MAX_QUERIES_PER_POLL:10}
+
+  # --- AI provider ---
+  ai:
+    provider: ${OPTIQ_AI_PROVIDER:openai}                 # "openai" or "anthropic"
+    openai-api-key: ${OPENAI_API_KEY:}
+    openai-model: ${OPENAI_MODEL:gpt-4o}
+    anthropic-api-key: ${ANTHROPIC_API_KEY:}
+    anthropic-model: ${ANTHROPIC_MODEL:claude-sonnet-4-20250514}
+
+  # --- Slack notifications ---
+  slack:
+    webhook-url: ${OPTIQ_SLACK_WEBHOOK_URL:}
+    enabled: ${OPTIQ_SLACK_ENABLED:false}
+
+# --- Actuator ---
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
