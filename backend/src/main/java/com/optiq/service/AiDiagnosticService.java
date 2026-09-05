@@ -58,9 +58,10 @@ public class AiDiagnosticService {
         );
 
         String responseText = response.content().text();
-        log.debug("AI raw response: {}", responseText);
+        log.info("AI raw response (first 500 chars): {}",
+            responseText != null ? responseText.substring(0, Math.min(responseText.length(), 500)) : "<null>");
 
-        return parseResponse(responseText);
+        return parseResponse(responseText != null ? responseText : "");
     }
 
     /**
@@ -118,22 +119,56 @@ public class AiDiagnosticService {
     private AnalysisResult parseResponse(String response) {
         try {
             String json = response.trim();
+            // Strip markdown code fences
             if (json.startsWith("```")) {
                 json = json.replaceAll("^```(?:json)?\\s*", "").replaceAll("\\s*```$", "");
             }
 
+            // Try to find JSON object in the response (AI might wrap it in text)
+            int braceStart = json.indexOf('{');
+            int braceEnd = json.lastIndexOf('}');
+            if (braceStart >= 0 && braceEnd > braceStart) {
+                json = json.substring(braceStart, braceEnd + 1);
+            }
+
+            // Handle truncated JSON — try to repair common truncation patterns
+            try {
+                JsonNode node = objectMapper.readTree(json);
+            } catch (Exception parseEx) {
+                log.warn("JSON parse failed, attempting repair: {}", parseEx.getMessage());
+                // Try closing unclosed strings/objects
+                String repaired = json;
+                // Count unmatched braces
+                int openBraces = 0;
+                for (char c : repaired.toCharArray()) {
+                    if (c == '{') openBraces++;
+                    if (c == '}') openBraces--;
+                }
+                // Add missing closing braces
+                for (int i = 0; i < openBraces; i++) repaired += "}";
+                // If string is unclosed, close it
+                long uncloseQuotes = repaired.chars().filter(c -> c == '"').count();
+                if (uncloseQuotes % 2 != 0) repaired += '"';
+                json = repaired;
+            }
+
             JsonNode node = objectMapper.readTree(json);
 
-            String rootCause = node.get("root_cause").asText();
-            String suggestedSql = node.get("suggested_sql").asText("");
-            int confidenceScore = node.get("confidence_score").asInt(50);
-            RiskLevel riskLevel = RiskLevel.valueOf(
-                node.get("risk_level").asText("MEDIUM").toUpperCase()
-            );
+            // Handle various field name variations the AI might use
+            String rootCause = getField(node, "root_cause", "root cause", "explanation", "cause", "analysis");
+            String suggestedSql = getField(node, "suggested_sql", "suggested_sql", "suggested sql", "sql", "fix", "recommendation", "optimization");
+            int confidenceScore = getIntField(node, "confidence_score", "confidence", "score", 50);
+            String riskStr = getField(node, "risk_level", "risk level", "risk", "severity", "MEDIUM");
+            RiskLevel riskLevel = parseRiskLevel(riskStr);
 
             confidenceScore = Math.max(1, Math.min(100, confidenceScore));
 
-            return new AnalysisResult(rootCause, suggestedSql, confidenceScore, riskLevel);
+            if (rootCause == null || rootCause.isBlank()) {
+                // Use the raw response as root cause if parsing failed
+                rootCause = response.substring(0, Math.min(response.length(), 500));
+            }
+
+            return new AnalysisResult(rootCause, suggestedSql != null ? suggestedSql : "", confidenceScore, riskLevel);
 
         } catch (Exception e) {
             log.error("Failed to parse AI response: {}", e.getMessage());
@@ -143,6 +178,30 @@ public class AiDiagnosticService {
                 "", 1, RiskLevel.HIGH
             );
         }
+    }
+
+    private String getField(JsonNode node, String... keys) {
+        for (String key : keys) {
+            JsonNode val = node.get(key);
+            if (val != null && !val.isNull()) return val.asText();
+        }
+        return null;
+    }
+
+    private int getIntField(JsonNode node, String key1, String key2, String key3, int defaultVal) {
+        for (String key : new String[]{key1, key2, key3}) {
+            JsonNode val = node.get(key);
+            if (val != null && !val.isNull()) return val.asInt(defaultVal);
+        }
+        return defaultVal;
+    }
+
+    private RiskLevel parseRiskLevel(String risk) {
+        if (risk == null) return RiskLevel.MEDIUM;
+        String upper = risk.toUpperCase().trim();
+        if (upper.contains("HIGH")) return RiskLevel.HIGH;
+        if (upper.contains("LOW")) return RiskLevel.LOW;
+        return RiskLevel.MEDIUM;
     }
 
     public String getModelName() {

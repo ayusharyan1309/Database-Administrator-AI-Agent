@@ -53,6 +53,7 @@ public class SettingsService {
     // ── Polling keys ──
     public static final String POLL_INTERVAL_MS = "polling.interval_ms";
     public static final String SLOW_THRESHOLD_MS = "polling.slow_threshold_ms";
+    public static final String MAX_QUERIES_PER_POLL = "polling.max_queries_per_poll";
 
     private final AppSettingRepository settingsRepo;
 
@@ -70,6 +71,9 @@ public class SettingsService {
     private String defaultSlackEnabled;
     @Value("${optiq.polling.interval-ms:300000}")
     private String defaultPollInterval;
+    @Value("${optiq.polling.max-queries-per-poll:10}")
+    private String defaultMaxQueriesPerPoll;
+
     @Value("${optiq.polling.slow-query-threshold-ms:500}")
     private String defaultSlowThreshold;
 
@@ -111,6 +115,7 @@ public class SettingsService {
         // Polling
         seedIfMissing(POLL_INTERVAL_MS, defaultPollInterval, "Polling interval in milliseconds", false);
         seedIfMissing(SLOW_THRESHOLD_MS, defaultSlowThreshold, "Slow query threshold in milliseconds", false);
+        seedIfMissing(MAX_QUERIES_PER_POLL, defaultMaxQueriesPerPoll, "Most queries to analyze in one poll", false);
 
         log.info("Settings initialized with {} entries", settingsRepo.count());
     }
@@ -203,6 +208,51 @@ public class SettingsService {
     public long getPollIntervalMs() { return Long.parseLong(get(POLL_INTERVAL_MS)); }
     public double getSlowThresholdMs() { return Double.parseDouble(get(SLOW_THRESHOLD_MS)); }
 
+    /**
+     * Slow query threshold as configured in Settings, falling back to the
+     * static application property when the setting is unset or unparseable.
+     *
+     * Callers must use this rather than reading
+     * {@code optiq.polling.slow-query-threshold-ms} directly: the static
+     * property is only the seed value, and reading it ignores whatever the
+     * user has since saved in Settings.
+     */
+    public double getSlowThresholdMs(double fallback) {
+        String raw = get(SLOW_THRESHOLD_MS);
+        if (raw == null || raw.isBlank()) return fallback;
+        try {
+            return Double.parseDouble(raw.trim());
+        } catch (NumberFormatException e) {
+            log.warn("Setting {} is not a number ({}); using {}", SLOW_THRESHOLD_MS, raw, fallback);
+            return fallback;
+        }
+    }
+
+    /** Batch size as configured in Settings, with a static fallback. */
+    public int getMaxQueriesPerPoll(int fallback) {
+        String raw = get(MAX_QUERIES_PER_POLL);
+        if (raw == null || raw.isBlank()) return fallback;
+        try {
+            int value = Integer.parseInt(raw.trim());
+            return value > 0 ? value : fallback;
+        } catch (NumberFormatException e) {
+            log.warn("Setting {} is not a number ({}); using {}", MAX_QUERIES_PER_POLL, raw, fallback);
+            return fallback;
+        }
+    }
+
+    /** Poll interval as configured in Settings, with a static fallback. */
+    public long getPollIntervalMs(long fallback) {
+        String raw = get(POLL_INTERVAL_MS);
+        if (raw == null || raw.isBlank()) return fallback;
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            log.warn("Setting {} is not a number ({}); using {}", POLL_INTERVAL_MS, raw, fallback);
+            return fallback;
+        }
+    }
+
     // ── Save ──
 
     public AppSetting save(String key, String value) {
@@ -215,11 +265,22 @@ public class SettingsService {
 
     public Map<String, String> saveAll(Map<String, String> updates) {
         Map<String, String> result = new LinkedHashMap<>();
+        int saved = 0;
         for (var entry : updates.entrySet()) {
-            save(entry.getKey(), entry.getValue());
-            result.put(entry.getKey(), entry.getValue());
+            String key = entry.getKey();
+            String value = entry.getValue();
+
+            // Skip masked sensitive values — the user didn't change them
+            if (value != null && value.contains("•")) {
+                result.put(key, "(unchanged)");
+                continue;
+            }
+
+            save(key, value);
+            result.put(key, value);
+            saved++;
         }
-        log.info("Updated {} settings", updates.size());
+        log.info("Updated {} of {} settings (skipped masked)", saved, updates.size());
         return result;
     }
 

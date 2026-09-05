@@ -104,6 +104,15 @@
         </dependency>
 
         <!-- JSON processing -->
+        <!-- Firebase Admin SDK — Firestore for entitlements and, later, all
+             of OptiQuery's own state. Optional at runtime: the app starts and
+             runs normally when no credentials are configured. -->
+        <dependency>
+            <groupId>com.google.firebase</groupId>
+            <artifactId>firebase-admin</artifactId>
+            <version>9.3.0</version>
+        </dependency>
+
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>

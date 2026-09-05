@@ -25,8 +25,26 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
         format_sql: true
 
-# --- Polling config ---
+# --- Firebase ---
+# Non-secret: a project id and a path. The service account JSON itself stays
+# out of the repo (gitignored) and out of the JAR — never put it under
+# src/main/resources, which is committed and packaged.
+#
+# The path may be relative; it is resolved against both the working directory
+# and the project root, so it works whether you run from ./ or ./backend.
 optiq:
+  firebase:
+    credentials-file: ${OPTIQ_FIREBASE_CREDENTIALS:optiquery-b213a-firebase-adminsdk-fbsvc-b733505184.json}
+    project-id: ${OPTIQ_FIREBASE_PROJECT_ID:optiquery-b213a}
+
+  # Vendor-side admin token for /api/admin/**. A secret: supply it through the
+  # environment, never here. Unset means those routes return 404.
+  admin:
+    token: ${OPTIQ_ADMIN_TOKEN:}
+
+  # First-run seeds only. Once the app has started, these live in Settings and
+  # the Settings page is authoritative; editing them here changes nothing on a
+  # database that already has the rows.
   polling:
     interval-ms: ${OPTIQ_POLL_INTERVAL_MS:300000}       # 5 minutes default
     slow-query-threshold-ms: ${OPTIQ_SLOW_THRESHOLD_MS:500}

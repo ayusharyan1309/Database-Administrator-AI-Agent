@@ -73,7 +73,7 @@ public class SlowQuery {
     private Instant updatedAt;
 
     /** Link to the AI analysis, if one exists. */
-    @OneToOne(mappedBy = "slowQuery", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    @OneToOne(mappedBy = "slowQuery", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     private AiAnalysis analysis;
 
     // --- Constructors ---

@@ -33,6 +33,9 @@ public class AiConfig {
     private final AtomicReference<ChatLanguageModel> currentModel = new AtomicReference<>();
     private final AtomicReference<String> currentModelName = new AtomicReference<>();
     private final AtomicReference<String> currentProviderLabel = new AtomicReference<>();
+    // Track the last key used so we can detect changes and reinitialize
+    private volatile String lastApiKey = null;
+    private volatile String lastBaseUrl = null;
 
     /**
      * Create or reinitialize the AI model from current settings.
@@ -77,7 +80,7 @@ public class AiConfig {
                             .baseUrl(baseUrl)
                             .modelName(modelNameStr != null ? modelNameStr : "gpt-4o")
                             .temperature(0.2)
-                            .maxTokens(2048);
+                            .maxTokens(4096);
 
                         if (key != null && !key.isBlank()) {
                             builder.apiKey(key);
@@ -99,6 +102,8 @@ public class AiConfig {
         currentModel.set(model);
         currentModelName.set(modelName);
         currentProviderLabel.set(label);
+        lastApiKey = settings.getAiApiKey();
+        lastBaseUrl = settings.getAiBaseUrl();
 
         if (model != null) {
             log.info("AI provider ready: {} (model: {})", label, modelName);
@@ -111,7 +116,11 @@ public class AiConfig {
 
     public ChatLanguageModel getModel(SettingsService settings) {
         ChatLanguageModel model = currentModel.get();
-        if (model == null && currentProviderLabel.get() == null) {
+        // Reinitialize if no model yet, or if key/baseUrl changed (user updated settings)
+        String currentKey = settings.getAiApiKey();
+        String currentUrl = settings.getAiBaseUrl();
+        if (model == null || !java.util.Objects.equals(currentKey, lastApiKey) || !java.util.Objects.equals(currentUrl, lastBaseUrl)) {
+            log.info("AI settings changed (key or baseUrl) — reinitializing model");
             return reinitialize(settings);
         }
         return model;

@@ -3,25 +3,72 @@
 @tailwind utilities;
 
 @layer base {
+  html { -webkit-text-size-adjust: 100%; }
+
   body {
-    @apply bg-gray-950 text-gray-100 antialiased;
+    @apply bg-abyss text-ink font-sans text-base antialiased;
+    font-feature-settings: 'cv01', 'ss01';
   }
 
-  /* Custom scrollbar for dark theme */
-  ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+  /* Measurements must line up column to column. */
+  .tnum, table, .font-mono { font-variant-numeric: tabular-nums; }
+
+  ::selection { background: rgba(86, 160, 240, 0.28); }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-signal ring-offset-2;
+    ring-offset-color: #0B1220;
   }
 
-  ::-webkit-scrollbar-track {
-    @apply bg-gray-900;
-  }
-
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb {
-    @apply bg-gray-700 rounded-full;
+    @apply rounded-full;
+    background: #223349;
+    border: 3px solid #0B1220;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: #2E4159; background-clip: padding-box; }
+}
+
+@layer components {
+  /* One surface treatment, not a shadowed card kit: hairline on a raised plane. */
+  .panel { @apply bg-surface border border-line rounded-lg; }
+
+  .rule { @apply border-t border-line; }
+
+  .btn {
+    @apply inline-flex items-center gap-2 px-3 py-2 rounded-md text-tiny font-medium
+           border border-line bg-raised text-ink transition-colors
+           hover:border-edge hover:bg-line disabled:opacity-40 disabled:pointer-events-none;
   }
 
-  ::-webkit-scrollbar-thumb:hover {
-    @apply bg-gray-600;
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-3.5 py-2 rounded-md text-tiny font-semibold
+           bg-signal text-abyss border border-signal transition-colors
+           hover:bg-signal-soft disabled:opacity-40 disabled:pointer-events-none;
+  }
+
+  .field {
+    @apply w-full px-3 py-2 rounded-md bg-abyss border border-line text-base text-ink
+           placeholder-faint transition-colors focus:border-signal focus:outline-none
+           focus:ring-1 focus:ring-signal;
+  }
+
+  .code {
+    @apply font-mono text-tiny leading-relaxed whitespace-pre-wrap break-words
+           bg-abyss border border-line rounded-md p-4 overflow-x-auto;
+  }
+
+  /* Section heads: sentence case, weight and colour carry the hierarchy — no caps eyebrows. */
+  .head { @apply text-mid font-semibold text-ink; }
+  .sub  { @apply text-tiny text-muted; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

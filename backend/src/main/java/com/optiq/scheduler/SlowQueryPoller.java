@@ -4,10 +4,10 @@ import com.optiq.config.TargetDatabaseConfig;
 import com.optiq.model.SlowQuery;
 import com.optiq.service.AnalysisOrchestrator;
 import com.optiq.service.PostgresMonitorService;
+import com.optiq.service.SettingsService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -16,9 +16,10 @@ import java.util.Map;
 /**
  * Periodically polls pg_stat_statements for slow queries.
  *
- * The @Scheduled annotation drives the daemon behavior described in the PRD:
- * "Must run a @Scheduled job every X minutes to query pg_stat_statements
- * and filter by mean_exec_time."
+ * Scheduling lives in {@link com.optiq.config.PollingScheduleConfig}, which
+ * re-reads the interval from Settings after every cycle. Every knob this loop
+ * uses — interval, threshold, batch size — comes from Settings, so the
+ * application properties act purely as first-run seeds.
  */
 @Component
 public class SlowQueryPoller {
@@ -27,24 +28,32 @@ public class SlowQueryPoller {
 
     private final PostgresMonitorService monitorService;
     private final AnalysisOrchestrator orchestrator;
+    private final SettingsService settings;
 
+    /** Seed value only — the live threshold comes from Settings. */
     @Value("${optiq.polling.slow-query-threshold-ms:500}")
-    private double slowThresholdMs;
+    private double defaultSlowThresholdMs;
 
+    /** Seed value only — the live batch size comes from Settings. */
     @Value("${optiq.polling.max-queries-per-poll:10}")
-    private int maxQueriesPerPoll;
+    private int defaultMaxQueriesPerPoll;
 
-    public SlowQueryPoller(PostgresMonitorService monitorService, AnalysisOrchestrator orchestrator) {
+    public SlowQueryPoller(PostgresMonitorService monitorService, AnalysisOrchestrator orchestrator,
+                           SettingsService settings) {
         this.monitorService = monitorService;
         this.orchestrator = orchestrator;
+        this.settings = settings;
     }
 
     /**
-     * Main polling loop. Runs at a configurable interval (default: 5 minutes).
+     * Main polling loop. Invoked by the settings-driven schedule, and directly
+     * by POST /api/queries/poll.
      */
-    @Scheduled(fixedDelayString = "${optiq.polling.interval-ms:300000}",
-               initialDelayString = "${optiq.polling.interval-ms:300000}")
     public void pollForSlowQueries() {
+        // Read every cycle so values saved in Settings take effect without a restart.
+        double slowThresholdMs = settings.getSlowThresholdMs(defaultSlowThresholdMs);
+        int maxQueriesPerPoll = settings.getMaxQueriesPerPoll(defaultMaxQueriesPerPoll);
+
         log.info("Polling pg_stat_statements (threshold: {}ms, max: {})",
             slowThresholdMs, maxQueriesPerPoll);
 

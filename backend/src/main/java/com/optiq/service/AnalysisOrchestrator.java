@@ -25,15 +25,18 @@ public class AnalysisOrchestrator {
     private final AiDiagnosticService aiService;
     private final NotificationService notificationService;
     private final SlowQueryRepository queryRepository;
+    private final EntitlementService entitlements;
 
     public AnalysisOrchestrator(PostgresMonitorService monitorService,
                                 AiDiagnosticService aiService,
                                 NotificationService notificationService,
-                                SlowQueryRepository queryRepository) {
+                                SlowQueryRepository queryRepository,
+                                EntitlementService entitlements) {
         this.monitorService = monitorService;
         this.aiService = aiService;
         this.notificationService = notificationService;
         this.queryRepository = queryRepository;
+        this.entitlements = entitlements;
     }
 
     /**
@@ -95,18 +98,45 @@ public class AnalysisOrchestrator {
 
             sq = queryRepository.save(sq);
 
-            // Step 4: AI Diagnosis
-            AnalysisResult result = aiService.analyzeQuery(
-                sq.getRawQuery(), schemaContext, explainPlan);
+            // Step 4: claim an analysis before spending on it. Detection and
+            // measurement above are free and always run, so a query whose
+            // trial has run out still shows its cost in the dashboard.
+            EntitlementService.Decision decision = entitlements.reserve();
+            if (!decision.allowed()) {
+                log.info("Skipping AI analysis for query #{}: {}", sq.getId(), decision);
+                sq.setStatus(AnalysisStatus.QUOTA_EXCEEDED);
+                sq.markUpdated();
+                return Optional.of(queryRepository.save(sq));
+            }
 
-            // Step 5: Store analysis
-            AiAnalysis analysis = new AiAnalysis(
-                sq, result.rootCause(), result.suggestedSql(),
-                result.confidenceScore(), result.riskLevel(),
-                aiService.getModelName()
-            );
+            AnalysisResult result;
+            try {
+                result = aiService.analyzeQuery(sq.getRawQuery(), schemaContext, explainPlan);
+            } catch (Exception e) {
+                // The reservation was spent on a call that produced nothing.
+                if (decision.consumedQuota()) entitlements.refund();
+                throw e;
+            }
+
+            // Step 5: Store analysis — reuse existing record or create new one
+            AiAnalysis analysis = sq.getAnalysis();
+            if (analysis != null) {
+                // Update existing analysis in place
+                analysis.setRootCause(result.rootCause());
+                analysis.setSuggestedSql(result.suggestedSql());
+                analysis.setConfidenceScore(result.confidenceScore());
+                analysis.setRiskLevel(result.riskLevel());
+                analysis.setModelUsed(aiService.getModelName());
+                analysis.setAnalyzedAt(Instant.now());
+            } else {
+                analysis = new AiAnalysis(
+                    sq, result.rootCause(), result.suggestedSql(),
+                    result.confidenceScore(), result.riskLevel(),
+                    aiService.getModelName()
+                );
+            }
             analysis.setPromptUsed("System prompt + user prompt (see AiDiagnosticService)");
-            analysis.setRawResponse(result.toString());
+            analysis.setRawResponse(result.rootCause() + "\n---\n" + result.suggestedSql());
 
             sq.setAnalysis(analysis);
             sq.setStatus(AnalysisStatus.COMPLETED);

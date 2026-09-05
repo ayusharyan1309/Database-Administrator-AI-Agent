@@ -314,7 +314,7 @@ export default function DocsPage() {
   const colorMap = {
     green: { header: 'bg-green-500/15 text-green-400', dot: 'bg-green-500', text: 'text-green-400/80' },
     red: { header: 'bg-red-500/15 text-red-400', dot: 'bg-red-500', text: 'text-red-400/80' },
-    grey: { header: 'bg-gray-500/15 text-gray-400', dot: 'bg-gray-500', text: 'text-gray-400/80' },
+    grey: { header: 'bg-raised text-muted', dot: 'bg-faint', text: 'text-muted' },
     blue: { header: 'bg-blue-500/15 text-blue-400', dot: 'bg-blue-500', text: 'text-blue-400/80' },
     yellow: { header: 'bg-yellow-500/15 text-yellow-400', dot: 'bg-yellow-500', text: 'text-yellow-400/80' },
   };
@@ -322,11 +322,11 @@ export default function DocsPage() {
   return (
     <div className="flex h-full">
       {/* Sidebar */}
-      <aside className="w-56 border-r border-gray-800 bg-gray-950 flex-shrink-0">
-        <div className="p-4 border-b border-gray-800">
+      <aside className="w-56 border-r border-line bg-abyss flex-shrink-0">
+        <div className="p-4 border-b border-line">
           <div className="flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-gray-500" />
-            <span className="text-xs font-mono text-gray-500">docs/</span>
+            <Terminal className="w-4 h-4 text-muted" />
+            <span className="text-xs font-mono text-muted">docs/</span>
           </div>
         </div>
         <nav className="p-2 space-y-0.5">
@@ -337,8 +337,8 @@ export default function DocsPage() {
               className={clsx(
                 'w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-mono transition-colors text-left',
                 activeSection === doc.id
-                  ? 'bg-gray-800 text-white'
-                  : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800/50'
+                  ? 'bg-raised text-ink'
+                  : 'text-muted hover:text-ink/90 hover:bg-raised/50'
               )}
             >
               <doc.icon className="w-3.5 h-3.5" />
@@ -354,20 +354,20 @@ export default function DocsPage() {
           {/* Sections */}
           {section?.subsections.map((sub, i) => (
             <div key={i}>
-              <h3 className="text-sm font-semibold text-gray-300 mb-3">{sub.title}</h3>
+              <h3 className="text-sm font-semibold text-ink/90 mb-3">{sub.title}</h3>
               <div className="grid gap-2" style={{ gridTemplateColumns: sub.blocks.length <= 2 ? `repeat(${sub.blocks.length}, 1fr)` : 'repeat(2, 1fr)' }}>
                 {sub.blocks.map((block, j) => {
                   const c = colorMap[block.color];
                   const key = `${section.id}-${i}-${j}`;
                   return (
-                    <div key={j} className="rounded-lg border border-gray-700/50 bg-gray-900 overflow-hidden">
-                      <div className={clsx('flex items-center justify-between px-3 py-2 border-b border-gray-700/50', c.header)}>
+                    <div key={j} className="rounded-lg border border-line bg-surface overflow-hidden">
+                      <div className={clsx('flex items-center justify-between px-3 py-2 border-b border-line', c.header)}>
                         <div className="flex items-center gap-2">
                           <div className={clsx('w-2 h-2 rounded-full', c.dot)} />
-                          <span className="text-xs font-mono font-semibold uppercase tracking-wide">{block.label}</span>
+                          <span className="text-xs font-mono font-semibold">{block.label}</span>
                         </div>
                         <button onClick={() => handleCopy(block.lines.join('\n'), key)} className="p-1 rounded hover:bg-white/10 transition-colors">
-                          {copiedKey === key ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3 text-gray-500 hover:text-gray-300" />}
+                          {copiedKey === key ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3 text-muted hover:text-ink/90" />}
                         </button>
                       </div>
                       <div className="p-3 bg-black/30">
@@ -379,10 +379,10 @@ export default function DocsPage() {
                             const isCode = line.startsWith('CREATE') || line.startsWith('GRANT') || line.startsWith('pip ') || line.startsWith('brew ') || line.startsWith('ollama ') || line.startsWith('vllm ') || line.startsWith('http');
                             return (
                               <div key={k} className={clsx(
-                                isHighlight && 'text-gray-300',
-                                isNumbered && 'text-gray-300',
+                                isHighlight && 'text-ink/90',
+                                isNumbered && 'text-ink/90',
                                 isCode && 'text-green-400/90',
-                                !isHighlight && !isNumbered && !isCode && 'text-gray-500'
+                                !isHighlight && !isNumbered && !isCode && 'text-muted'
                               )}>
                                 {line}
                               </div>

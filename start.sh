@@ -85,17 +85,36 @@ fi
 ok "PostgreSQL ready"
 
 # ── 2. Build backend JAR ──
-if [[ ! -f "$BACKEND_DIR/target/optiq-backend-0.1.0-SNAPSHOT.jar" ]]; then
-    log "Building backend JAR..."
+# Rebuild whenever a source file is newer than the jar. Only building when the
+# jar is missing is how you end up serving yesterday's code and seeing a 404 on
+# an endpoint you just added.
+JAR=$(ls "$BACKEND_DIR"/target/optiq-backend-*.jar 2>/dev/null | head -1)
+NEWER_SRC=$(find "$BACKEND_DIR/src" "$BACKEND_DIR/pom.xml" -newer "$JAR" 2>/dev/null | head -1)
+
+if [[ -z "$JAR" || -n "$NEWER_SRC" ]]; then
+    log "Building backend JAR (sources changed)..."
     (cd "$BACKEND_DIR" && mvn package -DskipTests -q) || { err "Build failed"; exit 1; }
+    JAR=$(ls "$BACKEND_DIR"/target/optiq-backend-*.jar | head -1)
     ok "Backend JAR built"
+else
+    ok "Backend JAR up to date"
 fi
 
-# ── 3. Create .env if missing ──
-if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
-    cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env" 2>/dev/null || true
-    warn "Created .env — edit it to add your OPENAI_API_KEY"
+# ── 3. Configuration ──
+# No .env is needed: the database, AI provider and polling all live in Settings,
+# and non-secret defaults live in backend/src/main/resources/application.yml.
+# Only secrets come from the environment.
+CREDS="${OPTIQ_FIREBASE_CREDENTIALS:-}"
+if [[ -z "$CREDS" ]]; then
+    CREDS=$(ls "$BACKEND_DIR"/*firebase-adminsdk*.json 2>/dev/null | head -1)
 fi
+if [[ -n "$CREDS" && -r "$CREDS" ]]; then
+    ok "Firebase key found — sign-in and teams enabled"
+else
+    warn "No Firebase key — running without sign-in (Settings and queries still work)"
+fi
+[[ -z "${OPTIQ_ADMIN_TOKEN:-}" ]] && \
+    log "OPTIQ_ADMIN_TOKEN unset — /api/admin returns 404 (set it to grant trials)"
 
 # ── 4. Start Backend in screen ──
 log "Starting backend..."

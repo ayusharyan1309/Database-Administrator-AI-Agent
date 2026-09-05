@@ -1,0 +1,4 @@
+target
+*.json
+!pom.json
+*.log

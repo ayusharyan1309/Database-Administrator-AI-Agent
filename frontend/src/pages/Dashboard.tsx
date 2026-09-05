@@ -1,257 +1,413 @@
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useState, useMemo } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import {
-  AlertTriangle, CheckCircle, Clock, XCircle, TrendingUp,
-  Search, ChevronLeft, ChevronRight, Loader2, Zap
-} from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, RotateCw, Check } from 'lucide-react';
 import clsx from 'clsx';
-import { fetchSlowQueries, fetchStats } from '../api';
-import type { AnalysisStatus, RiskLevel } from '../types';
+import { fetchSlowQueries, fetchStats, pollNow, fetchTeamActivity, type ActivityEvent } from '../api';
+import type { SlowQuery } from '../types';
+import {
+  formatDuration, durationText, heatFor, heatBar, heatText,
+  triageOf, describeFix, oneLine, queryKind, tableList, ledgerOf, hasFix,
+  type Triage,
+} from '../lib/query';
 
-const statusColors: Record<AnalysisStatus, string> = {
-  PENDING: 'bg-yellow-500/20 text-yellow-400',
-  ANALYZING: 'bg-blue-500/20 text-blue-400',
-  COMPLETED: 'bg-green-500/20 text-green-400',
-  FAILED: 'bg-red-500/20 text-red-400',
-  DISMISSED: 'bg-gray-500/20 text-gray-400',
-  APPLIED: 'bg-emerald-500/20 text-emerald-400',
-};
+const PAGE_SIZE = 12;
 
-const riskColors: Record<RiskLevel, string> = {
-  LOW: 'text-green-400',
-  MEDIUM: 'text-yellow-400',
-  HIGH: 'text-red-400',
-};
+/** Filters name what the user wants to do next, not the enum they map to. */
+const FILTERS: { id: string; label: string; match?: Triage[] }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'fix', label: 'Has a fix', match: ['fix-ready', 'fix-stale', 'applied'] },
+  { id: 'analyzing', label: 'Analyzing', match: ['reviewing'] },
+  { id: 'dismissed', label: 'Dismissed', match: ['dismissed'] },
+];
 
 export default function Dashboard() {
   const [page, setPage] = useState(0);
-  const [statusFilter, setStatusFilter] = useState<AnalysisStatus | ''>('');
-  const [searchTerm, setSearchTerm] = useState('');
-  const size = 15;
+  const [filter, setFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const queryClient = useQueryClient();
 
-  const { data: stats, isLoading: statsLoading } = useQuery({
-    queryKey: ['stats'],
-    queryFn: fetchStats,
+  const { data: stats } = useQuery({ queryKey: ['stats'], queryFn: fetchStats });
+
+  // One read for the whole list, rather than one per row.
+  const { data: teamActivity } = useQuery({
+    queryKey: ['team-activity'],
+    queryFn: fetchTeamActivity,
+    retry: false,
   });
 
-  const { data: queryData, isLoading: queriesLoading } = useQuery({
-    queryKey: ['slow-queries', page, statusFilter],
-    queryFn: () => fetchSlowQueries(page, size, statusFilter || undefined),
+  const { data, isLoading } = useQuery({
+    queryKey: ['slow-queries', page],
+    queryFn: () => fetchSlowQueries(page, PAGE_SIZE),
   });
 
-  const filteredQueries = queryData?.queries.filter((q) =>
-    !searchTerm || q.rawQuery.toLowerCase().includes(searchTerm.toLowerCase())
-  ) ?? [];
+  const poll = useMutation({
+    mutationFn: pollNow,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['slow-queries'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
+    },
+  });
 
-  const totalPages = queryData ? Math.ceil(queryData.totalCount / size) : 0;
+  const queries = useMemo(() => data?.queries ?? [], [data]);
+  const ledger = useMemo(() => ledgerOf(queries), [queries]);
+
+  const visible = queries.filter((q) => {
+    const f = FILTERS.find((x) => x.id === filter);
+    if (f?.match && !f.match.includes(triageOf(q).kind)) return false;
+    if (search && !q.rawQuery.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const totalPages = data ? Math.max(1, Math.ceil(data.totalCount / PAGE_SIZE)) : 1;
+  const burnedMs = stats?.totalTimeBurnedMs ?? ledger.totalMs;
 
   return (
-    <div className="p-8 space-y-8">
-      {/* Header */}
-      <div>
-        <h2 className="text-2xl font-bold text-white">Query Monitor</h2>
-        <p className="text-gray-500 mt-1">
-          Real-time slow query detection and AI-powered optimization
-        </p>
-      </div>
+    <div className="max-w-[1120px] mx-auto px-8 py-8 space-y-7">
+      <Ledger
+        burnedMs={burnedMs}
+        queries={queries}
+        fixesReady={ledger.fixesReady}
+        staleFixes={ledger.staleFixes}
+        analyzing={ledger.analyzing}
+        failed={ledger.failed}
+        untouched={queries.filter(
+          (q) => triageOf(q).kind === 'fix-ready' && !teamActivity?.[String(q.id)]
+        ).length}
+        onCheck={() => poll.mutate()}
+        checking={poll.isPending}
+        checked={poll.isSuccess && !poll.isPending}
+      />
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        <StatCard
-          label="Total Queries"
-          value={stats?.totalQueries ?? 0}
-          icon={TrendingUp}
-          color="text-optiq-400"
-          loading={statsLoading}
-        />
-        <StatCard
-          label="Pending Analysis"
-          value={stats?.pendingAnalysis ?? 0}
-          icon={Clock}
-          color="text-yellow-400"
-          loading={statsLoading}
-        />
-        <StatCard
-          label="Analyzed"
-          value={stats?.completedAnalysis ?? 0}
-          icon={CheckCircle}
-          color="text-green-400"
-          loading={statsLoading}
-        />
-        <StatCard
-          label="Dismissed"
-          value={stats?.dismissed ?? 0}
-          icon={XCircle}
-          color="text-gray-400"
-          loading={statsLoading}
-        />
-        <StatCard
-          label="Failed"
-          value={stats?.failed ?? 0}
-          icon={AlertTriangle}
-          color="text-red-400"
-          loading={statsLoading}
-        />
-      </div>
-
-      {/* Filters & Search */}
-      <div className="flex items-center gap-4">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
-          <input
-            type="text"
-            placeholder="Search queries..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 bg-gray-900 border border-gray-800 rounded-lg text-sm
-                       text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-optiq-500"
-          />
-        </div>
-
-        <select
-          value={statusFilter}
-          onChange={(e) => { setStatusFilter(e.target.value as AnalysisStatus | ''); setPage(0); }}
-          className="px-4 py-2.5 bg-gray-900 border border-gray-800 rounded-lg text-sm text-gray-200
-                     focus:outline-none focus:ring-2 focus:ring-optiq-500"
-        >
-          <option value="">All Statuses</option>
-          <option value="PENDING">Pending</option>
-          <option value="COMPLETED">Completed</option>
-          <option value="DISMISSED">Dismissed</option>
-          <option value="FAILED">Failed</option>
-        </select>
-      </div>
-
-      {/* Query Table */}
-      <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
-        {queriesLoading ? (
-          <div className="flex items-center justify-center py-20">
-            <Loader2 className="w-6 h-6 text-optiq-400 animate-spin" />
-          </div>
-        ) : filteredQueries.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 text-gray-500">
-            <Zap className="w-10 h-10 mb-3 text-gray-700" />
-            <p className="font-medium">No slow queries detected yet</p>
-            <p className="text-sm mt-1">The monitor is running and watching for queries slower than your threshold.</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-800 text-gray-500 text-left">
-                  <th className="px-4 py-3 font-medium">Query</th>
-                  <th className="px-4 py-3 font-medium text-right">Mean Time</th>
-                  <th className="px-4 py-3 font-medium text-right">Calls</th>
-                  <th className="px-4 py-3 font-medium">Tables</th>
-                  <th className="px-4 py-3 font-medium">Risk</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-800/50">
-                {filteredQueries.map((q) => (
-                  <tr
-                    key={q.id}
-                    className="hover:bg-gray-800/50 transition-colors"
-                  >
-                    <td className="px-4 py-3 max-w-md">
-                      <Link
-                        to={`/query/${q.id}`}
-                        className="text-optiq-400 hover:text-optiq-300 font-mono text-xs line-clamp-2 block"
-                      >
-                        {q.rawQuery.length > 120
-                          ? q.rawQuery.substring(0, 120) + '…'
-                          : q.rawQuery}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs text-orange-400">
-                      {q.meanExecTimeMs.toFixed(1)} ms
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs text-gray-400">
-                      {q.callCount.toLocaleString()}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-gray-400">
-                      {q.referencedTables ?? '—'}
-                    </td>
-                    <td className="px-4 py-3">
-                      {q.riskLevel ? (
-                        <span className={clsx('text-xs font-medium', riskColors[q.riskLevel])}>
-                          {q.riskLevel}
-                        </span>
-                      ) : (
-                        <span className="text-gray-600 text-xs">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={clsx(
-                          'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium',
-                          statusColors[q.status]
-                        )}
-                      >
-                        {q.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t border-gray-800">
-            <p className="text-xs text-gray-500">
-              Page {page + 1} of {totalPages} · {queryData?.totalCount} total
-            </p>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-                disabled={page === 0}
-                className="p-1.5 rounded-md bg-gray-800 text-gray-400 hover:text-gray-200 disabled:opacity-30"
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                disabled={page >= totalPages - 1}
-                className="p-1.5 rounded-md bg-gray-800 text-gray-400 hover:text-gray-200 disabled:opacity-30"
-              >
-                <ChevronRight className="w-4 h-4" />
-              </button>
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="head">Ranked by time burned</h2>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-faint pointer-events-none" />
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Find a table or column"
+                aria-label="Search queries"
+                className="field w-56 pl-8 py-1.5 text-tiny"
+              />
+            </div>
+            <div className="flex rounded-md border border-line overflow-hidden">
+              {FILTERS.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setFilter(f.id)}
+                  aria-pressed={filter === f.id}
+                  className={clsx(
+                    'px-2.5 py-1.5 text-tiny transition-colors border-r border-line last:border-r-0',
+                    filter === f.id
+                      ? 'bg-raised text-ink font-medium'
+                      : 'text-muted hover:text-ink hover:bg-raised/50'
+                  )}
+                >
+                  {f.label}
+                </button>
+              ))}
             </div>
           </div>
-        )}
-      </div>
+        </div>
+
+        <div className="panel overflow-hidden">
+          {isLoading ? (
+            <SkeletonRows />
+          ) : visible.length === 0 ? (
+            <Empty hasQueries={queries.length > 0} onClear={() => { setFilter('all'); setSearch(''); }} />
+          ) : (
+            <ul>
+              {visible.map((q, i) => (
+                <QueryRow
+                  key={q.id}
+                  query={q}
+                  maxMs={ledger.maxMs}
+                  rank={i}
+                  lastAction={teamActivity?.[String(q.id)]}
+                />
+              ))}
+            </ul>
+          )}
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-2.5 border-t border-line">
+              <p className="text-micro text-faint">
+                Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, data?.totalCount ?? 0)} of{' '}
+                {data?.totalCount ?? 0}
+              </p>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                  aria-label="Previous page"
+                  className="btn px-2 py-1"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                  disabled={page >= totalPages - 1}
+                  aria-label="Next page"
+                  className="btn px-2 py-1"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
 
-// --- Stat Card Component ---
+/* ---------------------------------------------------------------------------
+ * The ledger: one sentence naming the cost, and a bar showing who spent it.
+ * ------------------------------------------------------------------------- */
 
-function StatCard({
-  label,
-  value,
-  icon: Icon,
-  color,
-  loading,
+function Ledger({
+  burnedMs, queries, fixesReady, staleFixes, analyzing, failed, untouched, onCheck, checking, checked,
 }: {
-  label: string;
-  value: number;
-  icon: React.ComponentType<{ className?: string }>;
-  color: string;
-  loading: boolean;
+  burnedMs: number;
+  queries: SlowQuery[];
+  fixesReady: number;
+  untouched: number;
+  staleFixes: number;
+  analyzing: number;
+  failed: number;
+  onCheck: () => void;
+  checking: boolean;
+  checked: boolean;
 }) {
+  const live = queries.filter((q) => q.status !== 'DISMISSED');
+  const total = live.reduce((s, q) => s + q.totalExecTimeMs, 0);
+  const maxMs = live.reduce((m, q) => Math.max(m, q.totalExecTimeMs), 0);
+  const { value, unit } = formatDuration(burnedMs);
+
+  // Segments only read as distinct above ~1.5% of the bar; fold the rest.
+  const segments = live
+    .map((q) => ({ q, share: total > 0 ? q.totalExecTimeMs / total : 0 }))
+    .filter((s) => s.share >= 0.015);
+  const remainder = 1 - segments.reduce((s, x) => s + x.share, 0);
+
   return (
-    <div className="bg-gray-900 rounded-xl border border-gray-800 p-4">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">{label}</p>
-        <Icon className={clsx('w-4 h-4', color)} />
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-title font-semibold text-ink">
+            {live.length === 0 ? (
+              'Nothing is slowing your database down'
+            ) : (
+              <>
+                Your database burned{' '}
+                <span className="tnum text-heat-hot">{value} {unit}</span> on{' '}
+                {live.length} {live.length === 1 ? 'query' : 'queries'}
+              </>
+            )}
+          </h1>
+          <p className="sub mt-1">
+            {live.length === 0
+              ? 'Every detected query is either fixed or dismissed.'
+              : 'Time your database spent executing the statements below, across every recorded call.'}
+          </p>
+        </div>
+        <button onClick={onCheck} disabled={checking} className="btn shrink-0">
+          {checked && !checking ? (
+            <Check className="w-3.5 h-3.5 text-heat-cool" />
+          ) : (
+            <RotateCw className={clsx('w-3.5 h-3.5', checking && 'animate-spin')} />
+          )}
+          {checking ? 'Checking' : checked ? 'Up to date' : 'Check now'}
+        </button>
       </div>
-      <p className={clsx('text-2xl font-bold mt-2', loading ? 'text-gray-700' : 'text-white')}>
-        {loading ? '—' : value.toLocaleString()}
+
+      {live.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex h-2.5 rounded-full overflow-hidden bg-raised" role="presentation">
+            {segments.map(({ q, share }) => (
+              <div
+                key={q.id}
+                style={{ width: `${share * 100}%` }}
+                className={clsx(
+                  heatBar[heatFor(q.totalExecTimeMs, maxMs)],
+                  'origin-left animate-fill border-r border-abyss/60 last:border-r-0'
+                )}
+                title={`${oneLine(q.rawQuery).slice(0, 80)} — ${durationText(q.totalExecTimeMs)}`}
+              />
+            ))}
+            {remainder > 0.005 && (
+              <div style={{ width: `${remainder * 100}%` }} className="bg-line origin-left animate-fill" />
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+            {segments.slice(0, 4).map(({ q, share }) => (
+              <Link
+                key={q.id}
+                to={`/query/${q.id}`}
+                className="group flex items-center gap-2 text-tiny rounded-sm"
+              >
+                <span
+                  className={clsx(
+                    'w-2 h-2 rounded-xs shrink-0',
+                    heatBar[heatFor(q.totalExecTimeMs, maxMs)]
+                  )}
+                />
+                <span className="text-muted group-hover:text-ink transition-colors truncate max-w-[220px]">
+                  {tableList(q.referencedTables).join(', ') || queryKind(q.rawQuery)}
+                </span>
+                <span className="tnum text-faint">{Math.round(share * 100)}%</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-tiny rule pt-3">
+        {fixesReady > 0 && (
+          <Note count={fixesReady} tone="text-heat-cool" one="fix ready to apply" many="fixes ready to apply" />
+        )}
+        {untouched > 0 && (
+          <Note
+            count={untouched}
+            tone="text-heat-warm"
+            one="nobody has acted on yet"
+            many="nobody has acted on yet"
+          />
+        )}
+        {staleFixes > 0 && (
+          <Note count={staleFixes} tone="text-heat-warm" one="fix from an earlier run" many="fixes from an earlier run" />
+        )}
+        {analyzing > 0 && (
+          <Note count={analyzing} tone="text-signal" one="query still analyzing" many="queries still analyzing" />
+        )}
+        {failed > 0 && (
+          <Note count={failed} tone="text-heat-crit" one="query has no diagnosis" many="queries have no diagnosis" />
+        )}
+        {fixesReady + staleFixes + analyzing + failed === 0 && (
+          <span className="text-muted">Nothing needs your attention.</span>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function Note({ count, tone, one, many }: { count: number; tone: string; one: string; many: string }) {
+  return (
+    <span className="text-muted">
+      <span className={clsx('tnum font-semibold', tone)}>{count}</span>{' '}
+      {count === 1 ? one : many}
+    </span>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+ * A row is a bar. Width is cost, so reading the list is reading a profile.
+ * ------------------------------------------------------------------------- */
+
+function QueryRow({ query: q, maxMs, rank, lastAction }: {
+  query: SlowQuery; maxMs: number; rank: number; lastAction?: ActivityEvent;
+}) {
+  const heat = heatFor(q.totalExecTimeMs, maxMs);
+  const triage = triageOf(q);
+  const fix = describeFix(q.suggestedSql);
+  const { value, unit } = formatDuration(q.totalExecTimeMs);
+  const share = maxMs > 0 ? q.totalExecTimeMs / maxMs : 0;
+  const dimmed = q.status === 'DISMISSED';
+  const tables = tableList(q.referencedTables);
+
+  return (
+    <li className="border-b border-line last:border-b-0">
+      <Link
+        to={`/query/${q.id}`}
+        className={clsx(
+          'relative block px-4 py-3.5 transition-colors hover:bg-raised/70',
+          dimmed && 'opacity-45'
+        )}
+      >
+        {/* The cost bar sits behind the row, so length is readable at a glance. */}
+        <div
+          aria-hidden
+          style={{ width: `${Math.max(share * 100, 1.5)}%`, animationDelay: `${rank * 35}ms` }}
+          className={clsx(
+            'absolute left-0 top-0 bottom-0 origin-left animate-fill opacity-[0.09]',
+            heatBar[heat]
+          )}
+        />
+
+        <div className="relative flex items-baseline gap-4">
+          <div className="w-[92px] shrink-0 text-right">
+            <span className={clsx('tnum text-mid font-semibold', heatText[heat])}>{value}</span>
+            <span className="text-micro text-faint ml-1">{unit}</span>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <p className="font-mono text-tiny text-ink truncate">{oneLine(q.rawQuery)}</p>
+            <p className="text-micro text-faint mt-1">
+              {q.callCount.toLocaleString()} {q.callCount === 1 ? 'call' : 'calls'} at{' '}
+              {durationText(q.meanExecTimeMs)} each
+              {tables.length > 0 && <span className="text-muted"> · {tables.join(', ')}</span>}
+            </p>
+          </div>
+
+          <div className="w-[232px] shrink-0 text-right">
+            <span className={clsx('inline-flex items-center gap-1.5 text-tiny', triage.text)}>
+              <span className={clsx('w-1.5 h-1.5 rounded-full', triage.dot)} />
+              {triage.label}
+            </span>
+            {lastAction ? (
+              <p className="text-micro text-muted mt-1 leading-snug truncate">
+                {(lastAction.actorName || lastAction.actorEmail || 'Someone').split('@')[0]}{' '}
+                {lastAction.phrase}
+              </p>
+            ) : fix && hasFix(triage.kind) ? (
+              <p className="text-micro text-muted mt-1 leading-snug line-clamp-2">{fix}</p>
+            ) : null}
+          </div>
+        </div>
+      </Link>
+    </li>
+  );
+}
+
+/* ------------------------------------------------------------------------- */
+
+function SkeletonRows() {
+  return (
+    <div className="divide-y divide-line">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div key={i} className="flex items-center gap-4 px-4 py-4">
+          <div className="w-[92px] h-3.5 rounded-xs bg-raised" />
+          <div className="flex-1 h-3.5 rounded-xs bg-raised" style={{ maxWidth: `${70 - i * 9}%` }} />
+          <div className="w-[120px] h-3.5 rounded-xs bg-raised" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Empty({ hasQueries, onClear }: { hasQueries: boolean; onClear: () => void }) {
+  if (hasQueries) {
+    return (
+      <div className="px-6 py-16 text-center">
+        <p className="text-base text-ink">No query matches this view</p>
+        <p className="sub mt-1">Try a different filter or search term.</p>
+        <button onClick={onClear} className="btn mt-4">Show all queries</button>
+      </div>
+    );
+  }
+  return (
+    <div className="px-6 py-16 text-center">
+      <p className="text-base text-ink">No slow queries yet</p>
+      <p className="sub mt-1 max-w-md mx-auto">
+        OptiQuery samples pg_stat_statements on a schedule. Anything slower than your
+        threshold lands here with a diagnosis and a fix.
       </p>
+      <Link to="/settings" className="btn mt-4">Adjust the threshold</Link>
     </div>
   );
 }

@@ -1,26 +1,48 @@
 version: "3.9"
 
+# OptiQuery — full stack.
+#
+#   docker compose up -d --build
+#   open http://localhost:3000
+#
+# Nothing below is required for a first run. Firebase is optional: without it
+# the app runs with no sign-in and no Firestore, exactly as it does locally.
+#
+# Secrets come from the environment, or from a .env file that Docker Compose
+# interpolates. They are never baked into an image.
+
 services:
-  # ── PostgreSQL (the database being monitored) ──
+  # ── The database being watched ─────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: optiq-postgres
+    # pg_stat_statements only collects anything if it is preloaded. Creating the
+    # extension without this leaves the view present but permanently empty,
+    # which reads as "OptiQuery detects nothing" rather than a config mistake.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - pg_stat_statements.max=10000
     environment:
       POSTGRES_DB: optiq_target
       POSTGRES_USER: optiq_monitor
-      POSTGRES_PASSWORD: changeme
+      POSTGRES_PASSWORD: ${OPTIQ_DB_PASSWORD:-changeme}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./scripts/init-pgstat.sql:/docker-entrypoint-initdb.d/01-init-pgstat.sql
+      - ./scripts/init-pgstat.sql:/docker-entrypoint-initdb.d/01-init-pgstat.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U optiq_monitor -d optiq_target"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
 
-  # ── Spring Boot Backend ──
+  # ── The daemon and API ─────────────────────────────────────────────────────
   backend:
     build:
       context: ./backend
@@ -29,28 +51,49 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # First-run seeds. Once these values exist in Settings, the app reads
+      # Settings and changes here have no effect.
       OPTIQ_DB_URL: jdbc:postgresql://postgres:5432/optiq_target
       OPTIQ_DB_USERNAME: optiq_monitor
-      OPTIQ_DB_PASSWORD: changeme
-      OPTIQ_AI_PROVIDER: openai
+      OPTIQ_DB_PASSWORD: ${OPTIQ_DB_PASSWORD:-changeme}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPTIQ_POLL_INTERVAL_MS: "60000"     # 1 min for dev
-      OPTIQ_SLOW_THRESHOLD_MS: "100"
-      OPTIQ_SLACK_ENABLED: "false"
+
+      # Vendor-side trial endpoints. Unset means /api/admin/** returns 404
+      # rather than sitting unprotected.
+      OPTIQ_ADMIN_TOKEN: ${OPTIQ_ADMIN_TOKEN:-}
+
+      # Firebase. Unset means Firestore off and no sign-in required. The key is
+      # mounted read-only below and never copied into the image.
+      OPTIQ_FIREBASE_CREDENTIALS: ${OPTIQ_FIREBASE_CREDENTIALS:+/run/secrets/firebase.json}
+      OPTIQ_FIREBASE_PROJECT_ID: ${OPTIQ_FIREBASE_PROJECT_ID:-}
+    volumes:
+      # Mounts a file that may not exist, so fall back to something harmless.
+      - ${OPTIQ_FIREBASE_CREDENTIALS:-/dev/null}:/run/secrets/firebase.json:ro
     depends_on:
       postgres:
         condition: service_healthy
+    restart: unless-stopped
 
-  # ── React Frontend ──
+  # ── The dashboard ──────────────────────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      # Vite inlines these at BUILD time. Changing them needs a rebuild, not a
+      # restart: docker compose up -d --build frontend
+      args:
+        VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY:-}
+        VITE_FIREBASE_AUTH_DOMAIN: ${VITE_FIREBASE_AUTH_DOMAIN:-}
+        VITE_FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID:-}
+        VITE_FIREBASE_APP_ID: ${VITE_FIREBASE_APP_ID:-}
+        VITE_FIREBASE_STORAGE_BUCKET: ${VITE_FIREBASE_STORAGE_BUCKET:-}
+        VITE_FIREBASE_MESSAGING_SENDER_ID: ${VITE_FIREBASE_MESSAGING_SENDER_ID:-}
     container_name: optiq-frontend
     ports:
       - "3000:80"
     depends_on:
       - backend
+    restart: unless-stopped
 
 volumes:
   pgdata:

@@ -5,6 +5,7 @@ import {
   CheckCircle, XCircle, Eye, EyeOff, RefreshCw, Globe, Link
 } from 'lucide-react';
 import clsx from 'clsx';
+import { apiFetch } from '../api';
 
 interface SettingItem {
   key: string;
@@ -72,7 +73,7 @@ export default function SettingsPage() {
   const { data: settingsData, isLoading } = useQuery<SettingsResponse>({
     queryKey: ['settings'],
     queryFn: async () => {
-      const res = await fetch('/api/settings');
+      const res = await apiFetch('/settings');
       if (!res.ok) throw new Error('Failed to load settings');
       return res.json();
     },
@@ -86,6 +87,11 @@ export default function SettingsPage() {
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
   const [testResults, setTestResults] = useState<Record<string, TestResult | undefined>>({});
   const [testing, setTesting] = useState<Record<string, boolean | undefined>>({});
+  // Track original values to detect dirty fields
+  const [dbOriginal, setDbOriginal] = useState<Record<string, string>>({});
+  const [aiOriginal, setAiOriginal] = useState<Record<string, string>>({});
+  const [notifyOriginal, setNotifyOriginal] = useState<Record<string, string>>({});
+  const [pollingOriginal, setPollingOriginal] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (settingsData) {
@@ -99,6 +105,7 @@ export default function SettingsPage() {
       settingsData.settings.slack?.forEach(s => { if (!notify[s.key]) notify[s.key] = s.value; });
       settingsData.settings.polling?.forEach(s => { poll[s.key] = s.value; });
       setDbForm(db); setAiForm(ai); setNotifyForm(notify); setPollingForm(poll);
+      setDbOriginal({ ...db }); setAiOriginal({ ...ai }); setNotifyOriginal({ ...notify }); setPollingOriginal({ ...poll });
 
       // Reconstruct connection string from saved fields
       const savedUrl = db['db.jdbc_url'] || db['db.url'] || '';
@@ -123,7 +130,7 @@ export default function SettingsPage() {
 
   const saveMutation = useMutation({
     mutationFn: async (updates: Record<string, string>) => {
-      const res = await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) });
+      const res = await apiFetch('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) });
       if (!res.ok) throw new Error('Failed to save');
       return res.json();
     },
@@ -131,6 +138,15 @@ export default function SettingsPage() {
   });
 
   const parsed = dbConnStr.trim() ? parseConnectionString(dbConnStr.trim()) : null;
+
+  // Only return fields that differ from original
+  const dirtyFields = (current: Record<string, string>, original: Record<string, string>): Record<string, string> => {
+    const dirty: Record<string, string> = {};
+    for (const [k, v] of Object.entries(current)) {
+      if (v !== original[k]) dirty[k] = v;
+    }
+    return dirty;
+  };
 
   const handleSaveDb = () => {
     const updates: Record<string, string> = {};
@@ -143,18 +159,44 @@ export default function SettingsPage() {
       updates['db.password'] = parsed.password;
       updates['db.jdbc_url'] = dbConnStr.trim();
     }
+    // Only add fields that aren't already set from parsed connection string
     Object.entries(dbForm).forEach(([k, v]) => { if (!updates[k]) updates[k] = v; });
-    saveMutation.mutate(updates, { onSuccess: async () => { await handleTestDb(); } });
+    // Filter to only dirty fields
+    const dirty = dirtyFields(updates, dbOriginal);
+    if (Object.keys(dirty).length === 0) { handleTestDb(); return; }
+    saveMutation.mutate(dirty, { onSuccess: async () => {
+      // Update originals to new values
+      setDbOriginal({ ...dbForm, ...updates });
+      await handleTestDb();
+    }});
   };
-  const handleSaveAi = () => saveMutation.mutate(aiForm, { onSuccess: async () => { await handleTestAi(); } });
-  const handleSaveNotify = () => saveMutation.mutate(notifyForm, { onSuccess: async () => { await handleTestWebhook(); } });
-  const handleSavePolling = () => saveMutation.mutate(pollingForm);
+  const handleSaveAi = () => {
+    const dirty = dirtyFields(aiForm, aiOriginal);
+    if (Object.keys(dirty).length === 0) { handleTestAi(); return; }
+    saveMutation.mutate(dirty, { onSuccess: async () => {
+      setAiOriginal({ ...aiForm });
+      await handleTestAi();
+    }});
+  };
+  const handleSaveNotify = () => {
+    const dirty = dirtyFields(notifyForm, notifyOriginal);
+    if (Object.keys(dirty).length === 0) { handleTestWebhook(); return; }
+    saveMutation.mutate(dirty, { onSuccess: async () => {
+      setNotifyOriginal({ ...notifyForm });
+      await handleTestWebhook();
+    }});
+  };
+  const handleSavePolling = () => {
+    const dirty = dirtyFields(pollingForm, pollingOriginal);
+    if (Object.keys(dirty).length === 0) return;
+    saveMutation.mutate(dirty, { onSuccess: () => { setPollingOriginal({ ...pollingForm }); } });
+  };
 
   const handleTestDb = async () => {
     setTesting(t => ({ ...t, db: true })); setTestResults(t => ({ ...t, db: undefined }));
     try {
       const body = parsed ? { type: parsed.type, host: parsed.host, port: parsed.port, name: parsed.name, username: parsed.user, password: parsed.password } : { type: dbForm['db.type'], host: dbForm['db.host'], port: dbForm['db.port'], name: dbForm['db.name'], username: dbForm['db.username'], password: dbForm['db.password'] };
-      const res = await fetch('/api/settings/test-db', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await apiFetch('/settings/test-db', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const data = await res.json();
       setTestResults(t => ({ ...t, db: data }));
     } catch { setTestResults(t => ({ ...t, db: { success: false, message: 'Request failed' } })); }
@@ -164,7 +206,7 @@ export default function SettingsPage() {
   const handleTestAi = async () => {
     setTesting(t => ({ ...t, ai: true })); setTestResults(t => ({ ...t, ai: undefined }));
     try {
-      const res = await fetch('/api/settings/test-ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ providerType: aiForm['ai.provider'], baseUrl: aiForm['ai.base_url'], apiKey: aiForm['ai.api_key'], model: aiForm['ai.model'] }) });
+      const res = await apiFetch('/settings/test-ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ providerType: aiForm['ai.provider'], baseUrl: aiForm['ai.base_url'], apiKey: aiForm['ai.api_key'], model: aiForm['ai.model'] }) });
       const data = await res.json();
       setTestResults(t => ({ ...t, ai: data }));
     } catch { setTestResults(t => ({ ...t, ai: { success: false, message: 'Request failed' } })); }
@@ -174,37 +216,37 @@ export default function SettingsPage() {
   const handleTestWebhook = async () => {
     setTesting(t => ({ ...t, webhook: true })); setTestResults(t => ({ ...t, webhook: undefined }));
     try {
-      const res = await fetch('/api/settings/test-webhook', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: notifyForm['notify.type'], url: notifyForm['notify.webhook_url'] }) });
+      const res = await apiFetch('/settings/test-webhook', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: notifyForm['notify.type'], url: notifyForm['notify.webhook_url'] }) });
       const data = await res.json();
       setTestResults(t => ({ ...t, webhook: data }));
     } catch { setTestResults(t => ({ ...t, webhook: { success: false, message: 'Request failed' } })); }
     finally { setTesting(t => ({ ...t, webhook: false })); }
   };
 
-  if (isLoading) return <div className="flex items-center justify-center h-full"><Loader2 className="w-8 h-8 text-optiq-400 animate-spin" /></div>;
+  if (isLoading) return <div className="flex items-center justify-center h-full"><Loader2 className="w-8 h-8 text-signal animate-spin" /></div>;
 
   const activeNotifyType = notifyForm['notify.type'] || 'slack';
 
   return (
     <div className="p-8 max-w-4xl space-y-8">
       <div>
-        <h2 className="text-2xl font-bold text-white">Settings</h2>
-        <p className="text-gray-500 mt-1">Configure database, AI provider, notifications, and polling</p>
+        <h2 className="text-title font-semibold text-ink">Settings</h2>
+        <p className="text-muted mt-1">Configure database, AI provider, notifications, and polling</p>
       </div>
 
       {/* ─── Target Database ─── */}
       <Card icon={Database} title="Target Database" subtitle="Paste your connection string to connect" iconColor="text-blue-400">
         <div className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Connection String</label>
+            <label className="block text-xs font-semibold text-muted mb-2">Connection String</label>
             <div className="flex items-center gap-2">
-              <Link className="w-4 h-4 text-gray-500 flex-shrink-0" />
+              <Link className="w-4 h-4 text-muted flex-shrink-0" />
               <input
                 type="text"
                 value={dbConnStr}
                 onChange={e => setDbConnStr(e.target.value)}
                 placeholder="postgresql://user:password@host:5432/database"
-                className="flex-1 px-4 py-2.5 bg-gray-950 border border-gray-800 rounded-lg text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-optiq-500 font-mono"
+                className="flex-1 px-4 py-2.5 bg-abyss border border-line rounded-lg text-sm text-ink placeholder-faint focus:outline-none focus:ring-2 focus:ring-signal font-mono"
               />
             </div>
             {parsed && (
@@ -219,14 +261,14 @@ export default function SettingsPage() {
           </div>
 
           {/* Quick examples */}
-          <div className="flex flex-wrap gap-2 text-xs text-gray-600">
-            <span className="text-gray-500">Examples:</span>
+          <div className="flex flex-wrap gap-2 text-xs text-faint">
+            <span className="text-muted">Examples:</span>
             {[
               { label: 'Supabase', value: 'postgresql://postgres:password@db.your-project.supabase.co:5432/postgres' },
               { label: 'Neon', value: 'postgresql://user:password@ep-xxx.us-east-2.aws.neon.tech:5432/neondb' },
               { label: 'Local PG', value: 'postgresql://user:password@localhost:5432/mydb' },
             ].map(ex => (
-              <button key={ex.label} onClick={() => setDbConnStr(ex.value)} className="hover:text-gray-300 transition-colors">
+              <button key={ex.label} onClick={() => setDbConnStr(ex.value)} className="hover:text-ink/90 transition-colors">
                 {ex.label}
               </button>
             ))}
@@ -239,14 +281,14 @@ export default function SettingsPage() {
       {/* ─── AI Provider ─── */}
       <Card icon={Cpu} title="AI Provider" subtitle="Connect any LLM — local or cloud" iconColor="text-purple-400">
         <div className="space-y-4">
-          <Field label="Base URL" value={aiForm['ai.base_url'] || ''} onChange={v => setAiForm(f => ({ ...f, 'ai.base_url': v }))} placeholder="http://localhost:11434/v1" icon={<Globe className="w-4 h-4 text-gray-500" />} />
+          <Field label="Base URL" value={aiForm['ai.base_url'] || ''} onChange={v => setAiForm(f => ({ ...f, 'ai.base_url': v }))} placeholder="http://localhost:11434/v1" icon={<Globe className="w-4 h-4 text-muted" />} />
           <div className="grid grid-cols-4 gap-4">
             <div className="col-span-1"><Field label="Model" value={aiForm['ai.model'] || ''} onChange={v => setAiForm(f => ({ ...f, 'ai.model': v }))} placeholder="gpt-4o" /></div>
             <div className="col-span-3"><Field label="API Key" value={aiForm['ai.api_key'] || ''} onChange={v => setAiForm(f => ({ ...f, 'ai.api_key': v }))} type={showPasswords['ai.key'] ? 'text' : 'password'} placeholder="Optional for local LLMs" suffix={<EyeToggle show={!!showPasswords['ai.key']} onToggle={() => setShowPasswords(p => ({ ...p, 'ai.key': !p['ai.key'] }))} />} /></div>
           </div>
           {/* Quick examples */}
-          <div className="flex flex-wrap gap-2 text-xs text-gray-600">
-            <span className="text-gray-500">Examples:</span>
+          <div className="flex flex-wrap gap-2 text-xs text-faint">
+            <span className="text-muted">Examples:</span>
             {[
               { label: 'BazaarLink (Free)', url: 'https://api.bazaarlink.ai/v1', model: 'auto:free' },
               { label: 'Ollama', url: 'http://localhost:11434/v1', model: 'llama3' },
@@ -254,7 +296,7 @@ export default function SettingsPage() {
               { label: 'DeepSeek', url: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
               { label: 'Groq', url: 'https://api.groq.com/openai/v1', model: 'llama3-70b-8192' },
             ].map(ex => (
-              <button key={ex.label} onClick={() => setAiForm(f => ({ ...f, 'ai.base_url': ex.url, 'ai.model': ex.model }))} className="hover:text-gray-300 transition-colors">
+              <button key={ex.label} onClick={() => setAiForm(f => ({ ...f, 'ai.base_url': ex.url, 'ai.model': ex.model }))} className="hover:text-ink/90 transition-colors">
                 {ex.label}
               </button>
             ))}
@@ -266,61 +308,75 @@ export default function SettingsPage() {
       {/* ─── Notifications ─── */}
       <Card icon={Bell} title="Notifications" subtitle="Get alerts when slow queries are detected" iconColor="text-green-400">
         <div className="flex items-center gap-3 mb-1">
-          <label className="text-sm text-gray-400">Enable</label>
-          <button onClick={() => setNotifyForm(f => ({ ...f, 'notify.enabled': f['notify.enabled'] === 'true' ? 'false' : 'true' }))} className={clsx('relative w-10 h-5 rounded-full transition-colors', notifyForm['notify.enabled'] === 'true' ? 'bg-green-500' : 'bg-gray-700')}>
+          <label className="text-sm text-muted">Enable</label>
+          <button onClick={() => setNotifyForm(f => ({ ...f, 'notify.enabled': f['notify.enabled'] === 'true' ? 'false' : 'true' }))} className={clsx('relative w-10 h-5 rounded-full transition-colors', notifyForm['notify.enabled'] === 'true' ? 'bg-green-500' : 'bg-edge')}>
             <span className={clsx('absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform', notifyForm['notify.enabled'] === 'true' && 'translate-x-5')} />
           </button>
         </div>
         <PresetGrid label="Choose a Platform" presets={NOTIFY_PRESETS} activeId={activeNotifyType} onSelect={(p) => setNotifyForm(f => ({ ...f, 'notify.type': p.id }))} activeColor="green" />
         <div className="space-y-4">
-          <Field label="Webhook URL" value={notifyForm['notify.webhook_url'] || ''} onChange={v => setNotifyForm(f => ({ ...f, 'notify.webhook_url': v }))} placeholder={NOTIFY_PRESETS.find(p => p.id === activeNotifyType)?.placeholder || ''} icon={<Globe className="w-4 h-4 text-gray-500" />} />
-          <p className="text-xs text-gray-600">{NOTIFY_PRESETS.find(p => p.id === activeNotifyType)?.help}</p>
+          <Field label="Webhook URL" value={notifyForm['notify.webhook_url'] || ''} onChange={v => setNotifyForm(f => ({ ...f, 'notify.webhook_url': v }))} placeholder={NOTIFY_PRESETS.find(p => p.id === activeNotifyType)?.placeholder || ''} icon={<Globe className="w-4 h-4 text-muted" />} />
+          <p className="text-xs text-faint">{NOTIFY_PRESETS.find(p => p.id === activeNotifyType)?.help}</p>
         </div>
         <Actions onSave={handleSaveNotify} onTest={handleTestWebhook} testing={testing.webhook} saving={saveMutation.isPending} testLabel="Send Test Alert" result={testResults.webhook} renderResult={r => <TestResultBanner result={r} />} />
       </Card>
 
       {/* ─── Polling ─── */}
-      <Card icon={Clock} title="Polling" subtitle="How often to check for slow queries" iconColor="text-orange-400">
+      <Card icon={Clock} title="Polling" subtitle="How often to check for slow queries" iconColor="text-signal">
         <div className="space-y-5">
           {/* Poll Interval */}
           <div>
-            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Check Every</label>
+            <label className="block text-xs font-semibold text-muted mb-2">Check Every</label>
             <div className="flex flex-wrap gap-2">
               {[{ label: '30s', value: '30000' }, { label: '1 min', value: '60000' }, { label: '2 min', value: '120000' }, { label: '5 min', value: '300000' }, { label: '10 min', value: '600000' }, { label: '30 min', value: '1800000' }].map(p => (
                 <button key={p.value} onClick={() => setPollingForm(f => ({ ...f, 'polling.interval_ms': p.value }))}
                   className={clsx(
                     'px-3 py-1.5 rounded-lg text-xs font-medium border transition-all',
                     pollingForm['polling.interval_ms'] === p.value
-                      ? 'bg-orange-500/15 border-orange-500/40 text-orange-300'
-                      : 'bg-gray-950/50 border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300'
+                      ? 'bg-signal-wash border-signal/40 text-signal-soft'
+                      : 'bg-abyss/50 border-line text-muted hover:border-edge hover:text-ink/90'
                   )}>{p.label}</button>
               ))}
+              <div className="flex items-center gap-1">
+                <input type="number" min="1" value={pollingForm['polling.interval_ms'] || ''} onChange={e => setPollingForm(f => ({ ...f, 'polling.interval_ms': e.target.value }))} placeholder="custom" className="w-24 px-2 py-1.5 bg-abyss border border-line rounded-lg text-xs text-ink placeholder-faint focus:outline-none focus:ring-2 focus:ring-signal font-mono" />
+                <span className="text-xs text-faint">ms</span>
+              </div>
             </div>
           </div>
 
           {/* Slow Threshold */}
           <div>
-            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Flag Queries Slower Than</label>
+            <label className="block text-xs font-semibold text-muted mb-2">Flag Queries Slower Than</label>
             <div className="flex flex-wrap gap-2">
               {[{ label: '>100ms', value: '100' }, { label: '>200ms', value: '200' }, { label: '>500ms', value: '500' }, { label: '>1s', value: '1000' }, { label: '>2s', value: '2000' }, { label: '>5s', value: '5000' }].map(p => (
                 <button key={p.value} onClick={() => setPollingForm(f => ({ ...f, 'polling.slow_threshold_ms': p.value }))}
                   className={clsx(
                     'px-3 py-1.5 rounded-lg text-xs font-medium border transition-all',
                     pollingForm['polling.slow_threshold_ms'] === p.value
-                      ? 'bg-orange-500/15 border-orange-500/40 text-orange-300'
-                      : 'bg-gray-950/50 border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300'
+                      ? 'bg-signal-wash border-signal/40 text-signal-soft'
+                      : 'bg-abyss/50 border-line text-muted hover:border-edge hover:text-ink/90'
                   )}>{p.label}</button>
               ))}
               {/* Custom input */}
               <div className="flex items-center gap-1">
-                <input type="number" value={pollingForm['polling.slow_threshold_ms'] || ''} onChange={e => setPollingForm(f => ({ ...f, 'polling.slow_threshold_ms': e.target.value }))} placeholder="custom" className="w-20 px-2 py-1.5 bg-gray-950 border border-gray-800 rounded-lg text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-optiq-500 font-mono" />
-                <span className="text-xs text-gray-600">ms</span>
+                <input type="number" value={pollingForm['polling.slow_threshold_ms'] || ''} onChange={e => setPollingForm(f => ({ ...f, 'polling.slow_threshold_ms': e.target.value }))} placeholder="custom" className="w-20 px-2 py-1.5 bg-abyss border border-line rounded-lg text-xs text-ink placeholder-faint focus:outline-none focus:ring-2 focus:ring-signal font-mono" />
+                <span className="text-xs text-faint">ms</span>
               </div>
+            </div>
+          </div>
+
+          {/* Batch size */}
+          <div>
+            <label className="block text-xs font-semibold text-muted mb-2">Analyze At Most</label>
+            <div className="flex items-center gap-2">
+              <input type="number" min="1" value={pollingForm['polling.max_queries_per_poll'] || ''} onChange={e => setPollingForm(f => ({ ...f, 'polling.max_queries_per_poll': e.target.value }))} placeholder="10" className="w-20 px-2 py-1.5 bg-abyss border border-line rounded-lg text-xs text-ink placeholder-faint focus:outline-none focus:ring-2 focus:ring-signal font-mono" />
+              <span className="text-xs text-faint">queries per check — the slowest ones are analyzed first</span>
             </div>
           </div>
         </div>
         <div className="flex items-center gap-3 mt-6">
           <SaveBtn onClick={handleSavePolling} saving={saveMutation.isPending} />
+          <span className="text-xs text-faint">Applies from the next check. No restart needed.</span>
         </div>
       </Card>
     </div>
@@ -331,13 +387,13 @@ export default function SettingsPage() {
 
 function Card({ icon: Icon, title, subtitle, iconColor, children }: { icon: React.ComponentType<{ className?: string }>; title: string; subtitle: string; iconColor: string; children: React.ReactNode }) {
   return (
-    <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
-      <div className="px-6 py-5 border-b border-gray-800">
+    <div className="bg-surface rounded-xl border border-line overflow-hidden">
+      <div className="px-6 py-5 border-b border-line">
         <div className="flex items-center gap-3">
           <Icon className={clsx('w-5 h-5', iconColor)} />
           <div>
-            <h3 className="text-lg font-semibold text-white">{title}</h3>
-            <p className="text-sm text-gray-500">{subtitle}</p>
+            <h3 className="text-lg font-semibold text-ink">{title}</h3>
+            <p className="text-sm text-muted">{subtitle}</p>
           </div>
         </div>
       </div>
@@ -357,12 +413,12 @@ function PresetGrid<T extends { id: string; label: string; icon: string }>({ lab
   const cols = presets.length <= 4 ? 'grid-cols-4' : presets.length <= 6 ? 'grid-cols-6' : 'grid-cols-5';
   return (
     <div>
-      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">{label}</label>
+      <label className="block text-xs font-semibold text-muted mb-3">{label}</label>
       <div className={clsx('grid gap-2', cols)}>
         {presets.map(p => {
           const isActive = customActiveCheck ? customActiveCheck(p) : activeId === p.id;
           return (
-            <button key={p.id} onClick={() => onSelect(p)} className={clsx('flex flex-col items-center gap-1.5 px-3 py-3 rounded-xl border text-xs font-medium transition-all', isActive ? colorMap[activeColor] || colorMap.blue : 'bg-gray-950/50 border-gray-800 text-gray-500 hover:border-gray-700 hover:text-gray-300')}>
+            <button key={p.id} onClick={() => onSelect(p)} className={clsx('flex flex-col items-center gap-1.5 px-3 py-3 rounded-xl border text-xs font-medium transition-all', isActive ? colorMap[activeColor] || colorMap.blue : 'bg-abyss/50 border-line text-muted hover:border-edge hover:text-ink/90')}>
               <span className="text-lg">{p.icon}</span>
               <span className="leading-tight text-center">{p.label}</span>
             </button>
@@ -378,10 +434,10 @@ function Field({ label, value, onChange, type = 'text', placeholder, suffix, ico
 }) {
   return (
     <div>
-      <label className="block text-xs font-medium text-gray-400 uppercase tracking-wide mb-1.5">{label}</label>
+      <label className="block text-xs font-medium text-muted mb-1.5">{label}</label>
       <div className="flex items-center gap-2">
         {icon && <span className="flex-shrink-0">{icon}</span>}
-        <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} className="flex-1 px-4 py-2.5 bg-gray-950 border border-gray-800 rounded-lg text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-optiq-500 font-mono" />
+        <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} className="flex-1 px-4 py-2.5 bg-abyss border border-line rounded-lg text-sm text-ink placeholder-faint focus:outline-none focus:ring-2 focus:ring-signal font-mono" />
         {suffix}
       </div>
     </div>
@@ -389,15 +445,15 @@ function Field({ label, value, onChange, type = 'text', placeholder, suffix, ico
 }
 
 function EyeToggle({ show, onToggle }: { show: boolean; onToggle: () => void }) {
-  return <button onClick={onToggle} className="p-1">{show ? <EyeOff className="w-4 h-4 text-gray-500" /> : <Eye className="w-4 h-4 text-gray-500" />}</button>;
+  return <button onClick={onToggle} className="p-1">{show ? <EyeOff className="w-4 h-4 text-muted" /> : <Eye className="w-4 h-4 text-muted" />}</button>;
 }
 
 function SaveBtn({ onClick, saving }: { onClick: () => void; saving: boolean }) {
-  return <button onClick={onClick} disabled={saving} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-optiq-600 text-white text-sm font-medium hover:bg-optiq-500 transition-colors disabled:opacity-50">{saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Save</button>;
+  return <button onClick={onClick} disabled={saving} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-signal text-ink text-sm font-medium hover:bg-signal transition-colors disabled:opacity-50">{saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Save</button>;
 }
 
 function TestBtn({ onClick, testing, label }: { onClick: () => void; testing?: boolean; label: string }) {
-  return <button onClick={onClick} disabled={testing} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-800 text-gray-300 text-sm font-medium hover:bg-gray-700 transition-colors disabled:opacity-50">{testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />} {label}</button>;
+  return <button onClick={onClick} disabled={testing} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-raised text-ink/90 text-sm font-medium hover:bg-edge transition-colors disabled:opacity-50">{testing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />} {label}</button>;
 }
 
 function Actions({ onSave, onTest, testing, saving, testLabel, result, renderResult }: {
@@ -420,8 +476,8 @@ function DbTestResult({ result }: { result?: TestResult }) {
     {result.success ? <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0" /> : <XCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />}
     <div>
       <p>{result.message}</p>
-      {result.version && <p className="text-xs text-gray-500 mt-1 font-mono">{result.version}</p>}
-      {result.extra && <p className="text-xs text-gray-500 mt-0.5">{result.extra}</p>}
+      {result.version && <p className="text-xs text-muted mt-1 font-mono">{result.version}</p>}
+      {result.extra && <p className="text-xs text-muted mt-0.5">{result.extra}</p>}
     </div>
   </div>;
 }

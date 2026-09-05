@@ -23,6 +23,20 @@ public interface SlowQueryRepository extends JpaRepository<SlowQuery, Long> {
     /** Dashboard: filter by status. */
     Page<SlowQuery> findAllByStatusOrderByMeanExecTimeMsDesc(AnalysisStatus status, Pageable pageable);
 
+    /**
+     * Dashboard: rank by total time burned across all calls.
+     * This is the cost a team actually pays, so it is the default ordering:
+     * a 20 ms query called 50,000 times outranks a 900 ms query called twice.
+     */
+    Page<SlowQuery> findAllByOrderByTotalExecTimeMsDesc(Pageable pageable);
+
+    /** Dashboard: rank by total time burned, filtered by status. */
+    Page<SlowQuery> findAllByStatusOrderByTotalExecTimeMsDesc(AnalysisStatus status, Pageable pageable);
+
+    /** Aggregate total time burned across every non-dismissed query. */
+    @Query("SELECT COALESCE(SUM(sq.totalExecTimeMs), 0) FROM SlowQuery sq WHERE sq.status <> com.optiq.model.AnalysisStatus.DISMISSED")
+    double sumTotalExecTimeMs();
+
     /** Dashboard: search queries by SQL text. */
     @Query("SELECT sq FROM SlowQuery sq WHERE LOWER(sq.rawQuery) LIKE LOWER(CONCAT('%', :searchTerm, '%')) ORDER BY sq.meanExecTimeMs DESC")
     Page<SlowQuery> searchByRawQuery(@Param("searchTerm") String searchTerm, Pageable pageable);

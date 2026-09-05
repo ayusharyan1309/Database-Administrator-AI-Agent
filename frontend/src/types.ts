@@ -6,7 +6,8 @@ export type AnalysisStatus =
   | 'COMPLETED'
   | 'FAILED'
   | 'DISMISSED'
-  | 'APPLIED';
+  | 'APPLIED'
+  | 'QUOTA_EXCEEDED';
 
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH';
 
@@ -46,6 +47,18 @@ export interface QueryStats {
   dismissed: number;
   applied: number;
   failed: number;
+  /** Database time burned by every query still under review, in ms. */
+  totalTimeBurnedMs?: number;
+}
+
+export interface Entitlement {
+  mode: 'BYO' | 'HOSTED_TRIAL' | 'PAID';
+  analysesUsed: number;
+  analysesLimit: number;
+  analysesRemaining: number;
+  /** -1 when the grant has no expiry. */
+  daysRemaining: number;
+  active: boolean;
 }
 
 export interface HealthResponse {
@@ -53,5 +66,8 @@ export interface HealthResponse {
   service: string;
   timestamp: string;
   aiProvider: string;
+  aiModel?: string;
   slowQueryThresholdMs: number;
+  pollIntervalMs?: number;
+  entitlement?: Entitlement;
 }

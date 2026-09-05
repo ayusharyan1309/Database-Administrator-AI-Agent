@@ -27,3 +27,11 @@ Thumbs.db
 
 # Docker
 docker-compose.override.yml
+
+# Local Firebase config
+frontend/.env
+# Firebase Admin service account keys — full project access, never commit.
+# Matches the console's default download names too.
+*serviceAccount*.json
+*-firebase-adminsdk-*.json
+**/firebase-adminsdk*.json
